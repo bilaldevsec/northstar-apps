@@ -1,0 +1,76 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backup-agent
+  namespace: nsp-prod
+  annotations:
+    azure.workload.identity/client-id: "1d1d85b8-3e7a-457c-9505-6e7facbf164c"
+---
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: kv-backup
+  namespace: nsp-prod
+spec:
+  provider: azure
+  parameters:
+    usePodIdentity: "false"
+    clientID: "1d1d85b8-3e7a-457c-9505-6e7facbf164c"
+    keyvaultName: "kv-nsp-plat-dev-8l2m0"
+    tenantId: "e273d616-402c-4fdf-a5e3-a03921a0fd51"
+    objects: |
+      array:
+        - |
+          objectName: db-password
+          objectType: secret
+        - |
+          objectName: db-host
+          objectType: secret
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: db-backup
+  namespace: nsp-prod
+spec:
+  schedule: "0 2 * * *"
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            azure.workload.identity/use: "true"
+        spec:
+          serviceAccountName: backup-agent
+          containers:
+            - name: backup
+              image: mcr.microsoft.com/azure-cli:latest
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  echo "Installing pg_dump..."
+                  tdnf install -y postgresql 2>/dev/null || apk add --no-cache postgresql-client 2>/dev/null || (apt-get update && apt-get install -y postgresql-client)
+                  export PGSSLMODE=require
+                  export PGPASSWORD=$(cat /mnt/secrets/db-password | tr -d '\r\n')
+                  DB_HOST=$(cat /mnt/secrets/db-host | tr -d '\r\n')
+                  DUMP_FILE="/tmp/backup-$(date +%Y%m%d%H%M%S).sql"
+                  echo "Dumping database from $DB_HOST..."
+                  pg_dump -h "$DB_HOST" -U nspadmin -d postgres -f "$DUMP_FILE"
+                  echo "Authenticating to Azure via Workload Identity..."
+                  az login --federated-token "$(cat $AZURE_FEDERATED_TOKEN_FILE)" --service-principal -u $AZURE_CLIENT_ID -t $AZURE_TENANT_ID >/dev/null
+                  echo "Uploading dump to Immutable Vault..."
+                  az storage blob upload --account-name stnspdr1276143 -c db-backups -f "$DUMP_FILE" -n "$(basename $DUMP_FILE)" --auth-mode login
+                  echo "Backup completed successfully!"
+              volumeMounts:
+                - name: secrets
+                  mountPath: /mnt/secrets
+                  readOnly: true
+          volumes:
+            - name: secrets
+              csi:
+                driver: secrets-store.csi.k8s.io
+                readOnly: true
+                volumeAttributes:
+                  secretProviderClass: kv-backup
+          restartPolicy: OnFailure
