@@ -1,0 +1,31 @@
+name: promote-to-prod
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+jobs:
+  update-digest:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: image-ref
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Update prod overlay digest
+        run: |
+          REF=$(cat image-ref.txt)
+          DIGEST=$(echo "$REF" | cut -d@ -f2)
+          sed -i -E "s|digest: sha256:[a-f0-9]+|digest: $DIGEST|g" deploy/overlays/prod/kustomization.yaml
+      - name: Commit promotion change
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add deploy/overlays/prod/kustomization.yaml
+          git commit -m "chore(promote): update prod digest to ${{ github.event.workflow_run.head_sha }}" || exit 0
+          git push origin main
