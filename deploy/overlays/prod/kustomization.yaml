@@ -9,4 +9,4 @@ replicas:
 images:
   - name: orders-api
     newName: crnspcoredev8l2m0.azurecr.io/orders-api
-    digest: sha256:f457b29393012213eaf501c32a6e4f58f9eea707e8e7001c7c4014ce081e03bf
+    digest: sha256:7d63cc6a3cca3df39b805f440e7d60b19ab5477ad3f64a4763bbeea955552754
