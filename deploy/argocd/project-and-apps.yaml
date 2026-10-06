@@ -1,0 +1,28 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: northstar
+  namespace: argocd
+spec:
+  description: NorthStar Pay applications
+  sourceRepos: ["https://github.com/bilaldevsec/northstar-apps.git"]
+  destinations:
+    - {server: "https://kubernetes.default.svc", namespace: "nsp-dev"}
+    - {server: "https://kubernetes.default.svc", namespace: "nsp-staging"}
+    - {server: "https://kubernetes.default.svc", namespace: "nsp-prod"}
+  clusterResourceWhitelist: []
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: orders-api-prod
+  namespace: argocd
+spec:
+  project: northstar
+  source:
+    repoURL: "https://github.com/bilaldevsec/northstar-apps.git"
+    targetRevision: main
+    path: deploy/overlays/prod
+  destination:
+    server: "https://kubernetes.default.svc"
+    namespace: nsp-prod
