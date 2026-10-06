@@ -1,0 +1,26 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: zap-baseline
+  namespace: nsp-prod
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels: {role: test}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: zap
+          image: ghcr.io/zaproxy/zaproxy:stable
+          command: ["sh", "-c", "zap-baseline.py -t http://orders-api:8000 -J zap.json -I || true; cat zap.json | grep -o '\"riskdesc\": \"[^\"]*' | sort | uniq -c || true"]
+          workingDir: /zap/wrk
+          securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+          volumeMounts: [{name: wrk, mountPath: /zap/wrk}]
+      volumes: [{name: wrk, emptyDir: {}}]

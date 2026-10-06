@@ -1,0 +1,57 @@
+name: Verify Promotion Signatures
+
+on:
+  pull_request:
+    paths:
+      - 'deploy/overlays/**'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  verify-signatures:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID_VERIFY }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Login to ACR
+        run: |
+          az acr login -n ${{ vars.ACR_NAME }}
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Verify Signed Image Digests
+        run: |
+          python3 -c "
+          import yaml, subprocess, sys
+
+          with open('deploy/overlays/prod/kustomization.yaml') as f:
+              kust = yaml.safe_load(f)
+
+          images = kust.get('images', [])
+          if not images:
+              print('No images defined in deploy/overlays/prod/kustomization.yaml')
+              sys.exit(0)
+
+          for img in images:
+              image_ref = f\"{img['newName']}@{img['digest']}\"
+              print(f'Verifying image signature: {image_ref}')
+              cmd = [
+                  'cosign', 'verify',
+                  '--certificate-identity-regexp', 'https://github.com/bilaldevsec/northstar-apps/.*',
+                  '--certificate-oidc-issuer', 'https://token.actions.githubusercontent.com',
+                  image_ref
+              ]
+              subprocess.run(cmd, check=True)
+          print('All container images successfully verified with valid cryptographic signatures.')
+          "
