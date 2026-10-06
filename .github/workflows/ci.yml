@@ -1,30 +1,64 @@
 name: ci
 on:
+  pull_request:
   push:
     branches: [main]
+
 permissions:
   contents: read
+
 env:
+  SERVICE: orders-api
   IMAGE_NAME: orders-api
+
 jobs:
   quality:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Secrets scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install and test
+      - name: Install and unit test
         working-directory: services/orders-api
         run: |
           pip install -r requirements.txt pytest
-          pytest -q
+          python -m pytest -q
+      - name: Dependency audit (SCA)
+        working-directory: services/orders-api
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt --strict
+      - name: Semgrep (SAST)
+        run: |
+          pip install semgrep
+          semgrep scan --config p/python --config p/owasp-top-ten --error --metrics off services/orders-api
+
+  codeql:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: python
+      - uses: github/codeql-action/analyze@v3
+
   build:
     needs: quality
     runs-on: ubuntu-latest
     permissions:
       id-token: write
       contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -34,13 +68,34 @@ jobs:
           context: services/orders-api
           load: true
           tags: local/${{ env.IMAGE_NAME }}:${{ github.sha }}
+      - name: Trivy image scan (fail on fixable HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: local/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          scanners: vuln,secret,misconfig
+      - name: SBOM (CycloneDX)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: local/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          format: cyclonedx
+          output: sbom.cdx.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ github.sha }}
+          path: sbom.cdx.json
+
       - name: Azure login (OIDC)
+        if: github.ref == 'refs/heads/main'
         uses: azure/login@v2
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID_BUILD }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: Push to ACR
+        if: github.ref == 'refs/heads/main'
         id: push
         run: |
           az acr login -n ${{ vars.ACR_NAME }}
@@ -51,5 +106,17 @@ jobs:
           echo "digest=$DIGEST" >> $GITHUB_OUTPUT
           echo "ref=${{ vars.ACR_NAME }}.azurecr.io/${IMAGE_NAME}@${DIGEST}" >> $GITHUB_OUTPUT
       - uses: sigstore/cosign-installer@v3
-      - name: Sign image (keyless)
-        run: cosign sign --yes ${{ steps.push.outputs.ref }}
+        if: github.ref == 'refs/heads/main'
+      - name: Sign image (keyless) and attach SBOM attestation
+        if: github.ref == 'refs/heads/main'
+        run: |
+          cosign sign --yes ${{ steps.push.outputs.ref }}
+          cosign attest --yes --type cyclonedx --predicate sbom.cdx.json ${{ steps.push.outputs.ref }}
+      - name: Record the digest for the promote workflow
+        if: github.ref == 'refs/heads/main'
+        run: echo '${{ steps.push.outputs.ref }}' > image-ref.txt
+      - uses: actions/upload-artifact@v4
+        if: github.ref == 'refs/heads/main'
+        with:
+          name: image-ref
+          path: image-ref.txt
