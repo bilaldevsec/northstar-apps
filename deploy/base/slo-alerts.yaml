@@ -1,0 +1,42 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: orders-api-slo
+spec:
+  groups:
+    - name: orders-api.slo
+      rules:
+        - alert: OrdersApiErrorBudgetFastBurn
+          expr: |
+            (sum(rate(nsp_requests_total{code=~"5.."}[1h])) / sum(rate(nsp_requests_total[1h])) > (14.4 * 0.005))
+            and
+            (sum(rate(nsp_requests_total{code=~"5.."}[5m])) / sum(rate(nsp_requests_total[5m])) > (14.4 * 0.005))
+          for: 2m
+          labels: {severity: page}
+          annotations:
+            summary: "orders-api is burning its monthly error budget 14x too fast"
+            runbook_url: "https://github.com/bilaldevsec/northstar-platform/blob/main/docs/runbooks/high-error-rate.md"
+        - alert: OrdersApiErrorBudgetSlowBurn
+          expr: |
+            (sum(rate(nsp_requests_total{code=~"5.."}[6h])) / sum(rate(nsp_requests_total[6h])) > (6 * 0.005))
+            and
+            (sum(rate(nsp_requests_total{code=~"5.."}[30m])) / sum(rate(nsp_requests_total[30m])) > (6 * 0.005))
+          for: 15m
+          labels: {severity: ticket}
+          annotations:
+            summary: "orders-api error budget is draining steadily"
+            runbook_url: "https://github.com/bilaldevsec/northstar-platform/blob/main/docs/runbooks/high-error-rate.md"
+        - alert: OrdersApiLatencySLO
+          expr: histogram_quantile(0.95, sum by (le) (rate(nsp_request_seconds_bucket[10m]))) > 0.3
+          for: 15m
+          labels: {severity: ticket}
+          annotations:
+            summary: "p95 latency above 300 ms for 15 minutes"
+            runbook_url: "https://github.com/bilaldevsec/northstar-platform/blob/main/docs/runbooks/high-latency.md"
+        - alert: OrdersApiPodsNotReady
+          expr: kube_deployment_status_replicas_available{namespace="nsp-prod",deployment="orders-api"} < 1
+          for: 3m
+          labels: {severity: page}
+          annotations:
+            summary: "No orders-api pods available in production"
+            runbook_url: "https://github.com/bilaldevsec/northstar-platform/blob/main/docs/runbooks/pods-not-ready.md"
