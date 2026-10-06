@@ -1,0 +1,55 @@
+name: ci
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+env:
+  IMAGE_NAME: orders-api
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install and test
+        working-directory: services/orders-api
+        run: |
+          pip install -r requirements.txt pytest
+          pytest -q
+  build:
+    needs: quality
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build local image
+        uses: docker/build-push-action@v6
+        with:
+          context: services/orders-api
+          load: true
+          tags: local/${{ env.IMAGE_NAME }}:${{ github.sha }}
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID_BUILD }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Push to ACR
+        id: push
+        run: |
+          az acr login -n ${{ vars.ACR_NAME }}
+          REF=${{ vars.ACR_NAME }}.azurecr.io/${IMAGE_NAME}:${{ github.sha }}
+          docker tag local/${IMAGE_NAME}:${{ github.sha }} $REF
+          docker push $REF
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' $REF | cut -d@ -f2)
+          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+          echo "ref=${{ vars.ACR_NAME }}.azurecr.io/${IMAGE_NAME}@${DIGEST}" >> $GITHUB_OUTPUT
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign image (keyless)
+        run: cosign sign --yes ${{ steps.push.outputs.ref }}
